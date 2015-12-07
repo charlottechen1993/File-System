@@ -94,7 +94,7 @@ typedef struct cs1550_disk_block cs1550_disk_block;
  */
 static int cs1550_getattr(const char *path, struct stat *stbuf)
 {
-    printf("\n===I'm in getattr(): \n");
+    printf("\n===getattr()===\n");
     int res = -ENOENT;
     int count = 0;
     char directory_name[MAX_FILENAME + 1];		// subdirectory
@@ -110,7 +110,6 @@ static int cs1550_getattr(const char *path, struct stat *stbuf)
      * If path is root
      ******************/
     if (strcmp(path, "/") == 0) {
-        printf("here: root\n");
         stbuf->st_mode = S_IFDIR | 0755;
         stbuf->st_nlink = 2;
     }
@@ -118,11 +117,9 @@ static int cs1550_getattr(const char *path, struct stat *stbuf)
     else {
         count = sscanf(path, "/%[^/]/%[^.].%s", directory_name, filename, extension);
         
-        printf("here: not root\n");
         printf("directory_name: %s\n", directory_name);
         printf("filename: %s\n", filename);
         printf("extension: %s\n", extension);
-        
         
         FILE *file = fopen(".disk", "rb+");	// open .disk
         
@@ -136,8 +133,6 @@ static int cs1550_getattr(const char *path, struct stat *stbuf)
         
         //Loop through the array of directories in root for "directory_name"
         int i = 0;
-        printf("# of directories under root BEGINNING OF GETATTR: %i\n", root_dir->nDirectories);
-        printf("directory name in root: %s\n", root_dir->directories[i].dname);
         for(i=0; i < root_dir->nDirectories; i++){
             res = -ENOENT;
             //If "directory_name" exists as a subdirectory
@@ -192,12 +187,10 @@ static int cs1550_getattr(const char *path, struct stat *stbuf)
                 break;
             }
         }
-        printf("read error: %i\n", res);
         fseek(file, 0, SEEK_SET);
         //Read into memory
         fread(root_dir, sizeof(cs1550_root_directory), 1, file);
         //free up mem space allocated for structs
-        printf("# of directories in root END OF GETATTR: %i\n", root_dir->nDirectories);
         free(root_dir);
         free(dir_entry);
         
@@ -219,7 +212,7 @@ static int cs1550_getattr(const char *path, struct stat *stbuf)
 static int cs1550_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                           off_t offset, struct fuse_file_info *fi)
 {
-    printf("I'm in readdir(): \n");
+    printf("\n===readdir()===\n");
     //Since we're building with -Wall (all warnings reported) we need
     //to "use" every parameter, so let's just cast them to void to
     //satisfy the compiler
@@ -253,7 +246,7 @@ static int cs1550_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                 
                 fseek(file, cur , SEEK_SET);
                 fread(dir_entry, sizeof(cs1550_root_directory), 1, file);
-                filler(buf, ".", NULL,0);
+                filler(buf, ".", NULL, 0);
                 filler(buf, "..", NULL, 0);
                 
                 int j = 0;
@@ -299,11 +292,6 @@ static int cs1550_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
    	free(dir_entry);
     
     fclose(file);
-    /*
-     //add the user stuff (subdirs or files)
-     //the +1 skips the leading '/' on the filenames
-     filler(buf, newpath + 1, NULL, 0);
-     */
     return res;
 }
 
@@ -316,7 +304,7 @@ static int cs1550_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
  */
 static int cs1550_mkdir(const char *path, mode_t mode)
 {
-    printf("\n===I'm in mkdir(): \n");
+    printf("\n===mkdir()===\n");
     (void) path;
     (void) mode;
     char directory_name[MAX_FILENAME + 1];		// subdirectory
@@ -333,7 +321,6 @@ static int cs1550_mkdir(const char *path, mode_t mode)
     fseek(file, 0, SEEK_SET);
     //Read into memory
     fread(root_dir, sizeof(cs1550_root_directory), 1, file);
-    printf("# of directories in root beginning of mkdir: %i\n", root_dir->nDirectories);
     
     sscanf(path, "/%[^/]/%[^.].%s", directory_name, filename, extension);
     
@@ -343,15 +330,10 @@ static int cs1550_mkdir(const char *path, mode_t mode)
     
     //check for errors
     if(strcmp(path, "/") == 0){
-        printf("-EEXIST\n");
         return -EEXIST;
     } else if(strlen(directory_name)>MAX_FILENAME){
-        printf("-ENAMETOOLONG \n");
         return -ENAMETOOLONG;
     } else if (strlen(filename)!=0 || strlen(directory_name)==0){
-        printf("strlen(filename): %zu\n", strlen(filename));
-        printf("strlen(directory_name): %zu\n", strlen(directory_name));
-        printf("-EPERM \n");
         return -EPERM;
     } else {
         //Make sure directory doesn't already exist. -EEXIST if does
@@ -365,14 +347,12 @@ static int cs1550_mkdir(const char *path, mode_t mode)
             for(i=0; i<root_dir->nDirectories; i++){
                 if(strcmp(root_dir->directories[i].dname, directory_name)==0){
                     dir_exist = 1; //directory already exists
-                    printf("directory %s already exists\n", directory_name);
                     break;
                 }
             }
         }
         //path's directory name already exists, -EEXIST
         if(dir_exist==1){
-            printf("Second -EEXIST\n");
             return -EEXIST;
         }
         //path's directory name doesn't exist
@@ -390,7 +370,6 @@ static int cs1550_mkdir(const char *path, mode_t mode)
             for(i = 1; i<10240; i++){
                 if(bitmap[i]==0){
                     bitmap[i] = 1;
-                    printf("Found free position at block %i\n", i);
                     newdir_pos = i;
                     break; //break out of search after find free block
                 }
@@ -399,13 +378,11 @@ static int cs1550_mkdir(const char *path, mode_t mode)
             /*------------
              * Update root
              -------------*/
-            printf("# of directories in root before new directory: %i\n", root_dir->nDirectories);
             fseek(file, 0, SEEK_SET);
             fread(root_dir, sizeof(cs1550_root_directory), 1, file);
-            printf("# of directories in root after read root: %i\n", root_dir->nDirectories);
             //set name and byte position of new directory
             strcpy(root_dir->directories[(root_dir->nDirectories)].dname, directory_name);
-            printf("New directory position written to block %i, byte %i\n", newdir_pos, newdir_pos*512);
+            printf("New directory \"%s\" written to block %i\n", directory_name, newdir_pos);
             root_dir->directories[(root_dir->nDirectories)].nStartBlock = newdir_pos*512;
             //increment number of directories in root
             root_dir->nDirectories = (root_dir->nDirectories) + 1;
@@ -416,11 +393,10 @@ static int cs1550_mkdir(const char *path, mode_t mode)
              * Initialize new directory
              ------------------------*/
             cs1550_directory_entry * new_dir = malloc(sizeof(cs1550_directory_entry));
-            // Allocate space for new directory entry
-            memset(new_dir, 0, (MAX_FILENAME + 1)); //initialize new_dir to contain all 0s
-            fseek(file, newdir_pos*512, SEEK_SET);
-            new_dir->nFiles = 0; //initialize new directory's nFiles to 0
-            fwrite(new_dir, sizeof(cs1550_directory_entry),1,file);
+            memset(new_dir, 0, (MAX_FILENAME + 1)); 	//initialize new_dir to contain all 0s
+            fseek(file, newdir_pos*512, SEEK_SET);		//seek to mem position of new directory
+            new_dir->nFiles = 0; 						//initialize new directory's nFiles to 0
+            fwrite(new_dir, sizeof(cs1550_directory_entry),1,file); //write new_dir to disk
             
             /*--------------
              * Update Bitmap
@@ -430,17 +406,12 @@ static int cs1550_mkdir(const char *path, mode_t mode)
             
             fseek(file, 0, SEEK_SET);
             fread(root_dir, sizeof(cs1550_root_directory), 1, file);
-            printf("# of directories in root AFTER: %i\n", root_dir->nDirectories);
             
             free(new_dir);
         }
-        
     }
-    printf("# of directories in root END OF MKDIR: %i\n", root_dir->nDirectories);
-    
     //free up mem space allocated for root
    	free(root_dir);
-    
     fclose(file);
     return 0;
 }
@@ -516,11 +487,11 @@ static int cs1550_read(const char *path, char *buf, size_t size, off_t offset,
 // ============================================================================
 // ============================== cs1550_write() ==============================
 // ============================================================================
-/* 
+/*
  * Write size bytes from buf into file starting from offset
  *
  */
-static int cs1550_write(const char *path, const char *buf, size_t size, 
+static int cs1550_write(const char *path, const char *buf, size_t size,
                         off_t offset, struct fuse_file_info *fi)
 {
     (void) buf;
@@ -545,7 +516,7 @@ static int cs1550_write(const char *path, const char *buf, size_t size,
 
 /*
  * truncate is called when a new file is created (with a 0 size) or when an
- * existing file is made shorter. We're not handling deleting files or 
+ * existing file is made shorter. We're not handling deleting files or
  * truncating existing ones, so all we need to do here is to initialize
  * the appropriate directory entry.
  *
@@ -559,7 +530,7 @@ static int cs1550_truncate(const char *path, off_t size)
 }
 
 
-/* 
+/*
  * Called when we open a file
  *
  */
@@ -574,7 +545,7 @@ static int cs1550_open(const char *path, struct fuse_file_info *fi)
     
     //It's not really necessary for this project to anything in open
     
-    /* We're not going to worry about permissions for this project, but 
+    /* We're not going to worry about permissions for this project, but
      if we were and we don't have them to the file we should return an error
      
      return -EACCES;
@@ -585,7 +556,7 @@ static int cs1550_open(const char *path, struct fuse_file_info *fi)
 
 /*
  * Called when close is called on a file descriptor, but because it might
- * have been dup'ed, this isn't a guarantee we won't ever need the file 
+ * have been dup'ed, this isn't a guarantee we won't ever need the file
  * again. For us, return success simply to avoid the unimplemented error
  * in the debug log.
  */
