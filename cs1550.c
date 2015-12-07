@@ -254,12 +254,12 @@ static int cs1550_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
                 for(j=0; j<MAX_FILES_IN_DIR; j++){
                     if(dir_entry->files[i].fname[0] == '\0'){
                         continue;
-                    } else if (strlen(dir_entry->files[i].fext)==0){
-                        char fullname[12];
-                        strcat(fullname, dir_entry->files[i].fname);
+                    } else if (strlen(dir_entry->files[i].fext)==0){	//if file has no extension
+                        char fullname[12];								//initialize an array to store filename
+                        strcat(fullname, dir_entry->files[i].fname);	//append filename
                         filler(buf, fullname, NULL, 0);
                     } else {											//if file has extension
-                        char fullname[12];								//intialize an array to store file name
+                        char fullname[12];								//intialize an array to store filename
                         strcat(fullname, dir_entry->files[i].fname);	//append filename
                         strcat(fullname, ".");							//append .
                         strcat(fullname, dir_entry->files[i].fext);		//append extension
@@ -273,13 +273,13 @@ static int cs1550_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
     }
     //If path is root
     else {
-        fseek(file, 0, SEEK_SET);
-        fread(root_dir, sizeof(cs1550_root_directory), 1, file);
-        
         //the filler function allows us to add entries to the listing
         //read the fuse.h file for a description (in the ../include dir)
-        filler(buf, ".", NULL,0);
+        filler(buf, ".", NULL, 0);
         filler(buf, "..", NULL, 0);
+        
+        fseek(file, 0, SEEK_SET);
+        fread(root_dir, sizeof(cs1550_root_directory), 1, file);
         
         //print all directories in root directory
         int i=0;
