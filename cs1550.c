@@ -83,6 +83,11 @@ struct cs1550_disk_block
 
 typedef struct cs1550_disk_block cs1550_disk_block;
 
+int get_directory_pos(char * directory_name);
+int get_file_pos(char * filename, char * extension, int dir_pos);
+size_t get_file_size(char * filename, char * extension, int dir_pos);
+
+
 // ============================================================================
 // ============================= cs1550_getattr() =============================
 // ============================================================================
@@ -463,6 +468,7 @@ static int cs1550_mknod(const char *path, mode_t mode, dev_t dev)
     FILE * file = fopen(".disk", "rb+");
     cs1550_root_directory * root_dir = malloc(sizeof(cs1550_root_directory));
     cs1550_directory_entry * dir_entry = malloc(sizeof(cs1550_directory_entry));
+    cs1550_disk_block * file_block = malloc(sizeof(cs1550_disk_block));
     
     fseek(file, 0, SEEK_SET);
     fread(root_dir, sizeof(cs1550_root_directory), 1, file);
@@ -544,7 +550,7 @@ static int cs1550_mknod(const char *path, mode_t mode, dev_t dev)
     strcpy(dir_entry->files[(dir_entry->nFiles)].fext, extension);
     dir_entry->files[(dir_entry->nFiles)].fsize = 0;
     dir_entry->files[(dir_entry->nFiles)].nStartBlock = newfile_pos*512;
-    printf("New file \"%s\".%s written to block %i\n", filename, extension, newfile_pos);
+    printf("New file %s.%s written to block %i\n", filename, extension, newfile_pos);
     //increment number of file in subdirectory
     dir_entry->nFiles = (dir_entry->nFiles) + 1;
     
@@ -554,7 +560,6 @@ static int cs1550_mknod(const char *path, mode_t mode, dev_t dev)
     
     fseek(file, dir_pos, SEEK_SET);
     fread(dir_entry, sizeof(cs1550_directory_entry), 1, file);
-    
     printf("--------------------\nThere are %i files under directory %s \n", dir_entry->nFiles, directory_name);
     int m;
     for (m = 0; m < dir_entry->nFiles; m++) {
@@ -567,8 +572,13 @@ static int cs1550_mknod(const char *path, mode_t mode, dev_t dev)
     fseek(file, -10240, SEEK_END);
     fwrite(bitmap, sizeof(bitmap), 1, file);
     
+    //initialize block for new file
+    fseek(file, newfile_pos*512, SEEK_SET);
+    fwrite(file_block, sizeof(cs1550_disk_block), 1, file);
+    
     free(root_dir);
     free(dir_entry);
+    free(file_block);
     
     fclose(file);
     return 0;
@@ -583,7 +593,135 @@ static int cs1550_mknod(const char *path, mode_t mode, dev_t dev)
 static int cs1550_unlink(const char *path)
 {
     (void) path;
+    printf("\n===unlink()===\n");
     
+    char directory_name[MAX_FILENAME + 1];      // subdirectory
+    char filename[MAX_FILENAME + 1];            // filename
+    char extension[MAX_EXTENSION + 1];          // extension
+    
+    memset(directory_name, 0, (MAX_FILENAME + 1));      // initialize directory to 0
+    memset(filename, 0, (MAX_FILENAME + 1));            // initialize filename to 0
+    memset(extension, 0, (MAX_EXTENSION + 1));          // initialize extension to 0
+    
+    FILE * file = fopen(".disk", "rb+");
+    cs1550_root_directory * root_dir = malloc(sizeof(cs1550_root_directory));
+    cs1550_directory_entry * dir_entry = malloc(sizeof(cs1550_directory_entry));
+    cs1550_disk_block * file_block = malloc(sizeof(cs1550_disk_block));
+    
+    fseek(file, 0, SEEK_SET);
+    fread(root_dir, sizeof(cs1550_root_directory), 1, file);
+    
+    sscanf(path, "/%[^/]/%[^.].%s", directory_name, filename, extension);
+    
+    int dir_pos = -1;       //directory byte position on disk
+    int file_pos = -1;      //file byte position on disk
+    dir_pos = get_directory_pos(directory_name);
+    file_pos = get_file_pos(filename, extension, dir_pos);
+    
+    //if file is not found
+    if(file_pos==-1){
+        return -ENOENT;
+    }
+    //if path is a directory
+    else if (strlen(directory_name)!=0 && strlen(filename)==0){
+        return -EISDIR;
+    }
+    
+    /*-----------------------
+     * Update Directory Entry
+     -----------------------*/
+    fseek(file, dir_pos, SEEK_SET);
+    fread(dir_entry, sizeof(cs1550_directory_entry), 1, file);
+    
+    //iterate through all file entries in directory to find file to delete
+    int i = 0;
+    for(i = 0; i < MAX_FILES_IN_DIR; i++){
+        if(strcmp(dir_entry->files[i].fname, filename)==0 && strcmp(dir_entry->files[i].fext, extension)==0){
+            //clear all data of the file entry
+            strcpy(dir_entry->files[i].fname, "");
+            strcpy(dir_entry->files[i].fext, "");
+            dir_entry->files[i].fsize = 0;
+            dir_entry->files[i].nStartBlock = 0;
+            
+            //Shift all file positions under directory
+            int j;
+            for (j = i; j < dir_entry->nFiles-1; j++) {
+                dir_entry->files[j] = dir_entry->files[j+1];
+            }
+            strcpy(dir_entry->files[dir_entry->nFiles-1].fname, "");
+            strcpy(dir_entry->files[dir_entry->nFiles-1].fext, "");
+            dir_entry->files[dir_entry->nFiles-1].fsize = 0;
+            
+            dir_entry->nFiles -= 1;
+            
+            break;
+        }
+    }
+    
+    //decrement the number of files in directory
+    // dir_entry->nFiles = dir_entry->nFiles - 1;
+    
+    printf("Number of files under dir %i\n", dir_entry->nFiles);
+    //update directory entry
+    fseek(file, dir_pos, SEEK_SET);
+    fwrite(dir_entry, sizeof(cs1550_directory_entry), 1, file);
+    
+    /*------------------------
+     * Update File Disk Blocks
+     ------------------------*/
+    //clear all file blocks
+    fseek(file, file_pos, SEEK_SET);
+    fread(file_block, sizeof(cs1550_disk_block), 1, file);
+    
+    //set all bytes in first file block to 0
+    memset(file_block, 0, sizeof(MAX_DATA_IN_BLOCK));
+    
+    fseek(file, file_pos, SEEK_SET);
+    fwrite(file_block, sizeof(cs1550_disk_block), 1, file);
+    
+    /*--------------
+     * Update Bitmap
+     --------------*/
+    //load bitmap
+    char bitmap[10240]="";          //bitmap array represents 10240 blocks
+    memset(bitmap, 0, 10240);       //initialize array to contain all 0s
+    
+    //mark deleted file's position in bitmap to free (0)
+    fseek(file, -10240, SEEK_END);
+    fread(bitmap, 10240, 1, file);
+    bitmap[file_pos/512] = 0;
+    printf("Deleted file at block %i\n", file_pos/512);
+    
+    //if file occupies more than 1 block, continue and clear
+    while(file_block->nNextBlock != 0){
+        printf("There's more than 1 block\n");
+        file_pos = file_block->nNextBlock;  //update position of next deleting block
+        file_block->nNextBlock = 0;         //unlink next block from current block
+        fwrite(file_block, sizeof(cs1550_disk_block), 1, file); //update current block
+        
+        //update new block with new file block position
+        fseek(file, file_pos, SEEK_SET);    //seek to new block to delete
+        fread(file_block, sizeof(cs1550_disk_block), 1, file);
+        
+        memset(file_block, 0, sizeof(MAX_DATA_IN_BLOCK));
+        
+        fseek(file, file_pos, SEEK_SET);
+        fwrite(file_block, sizeof(cs1550_disk_block), 1, file);
+        
+        /*--------------
+         * Update Bitmap
+         --------------*/
+        //mark deleted file's position in bitmap to free (0)
+        bitmap[file_pos/512] = 0;
+        printf("Deleted file at block %i\n", file_pos/512);
+    }
+    fseek(file, -10240, SEEK_END);
+    fwrite(bitmap, sizeof(bitmap), 1, file);
+    
+    fclose(file);
+    free(root_dir);
+    free(dir_entry);
+    free(file_block);
     return 0;
 }
 
@@ -597,21 +735,129 @@ static int cs1550_unlink(const char *path)
 static int cs1550_read(const char *path, char *buf, size_t size, off_t offset,
                        struct fuse_file_info *fi)
 {
+    printf("\n===read()===\n");
     (void) buf;
     (void) offset;
     (void) fi;
     (void) path;
     
+    char directory_name[MAX_FILENAME + 1];      // subdirectory
+    char filename[MAX_FILENAME + 1];            // filename
+    char extension[MAX_EXTENSION + 1];          // extension
+    
+    memset(directory_name, 0, (MAX_FILENAME + 1));      // initialize directory to 0
+    memset(filename, 0, (MAX_FILENAME + 1));            // initialize filename to 0
+    memset(extension, 0, (MAX_EXTENSION + 1));          // initialize extension to 0
+    
+    FILE * file = fopen(".disk", "rb+");
+    cs1550_root_directory * root_dir = malloc(sizeof(cs1550_root_directory));
+    cs1550_directory_entry * dir_entry = malloc(sizeof(cs1550_directory_entry));
+    cs1550_disk_block * file_block = malloc(sizeof(cs1550_disk_block));
+    
+    fseek(file, 0, SEEK_SET);
+    fread(root_dir, sizeof(cs1550_root_directory), 1, file);
+    
+    sscanf(path, "/%[^/]/%[^.].%s", directory_name, filename, extension);
+    
+    int dir_pos = -1;       //directory byte position on disk
+    int file_pos = -1;      //file byte position on disk
+    size_t file_size = -1;  //size of file
+    dir_pos = get_directory_pos(directory_name);
+    file_pos = get_file_pos(filename, extension, dir_pos);
+    file_size = get_file_size(filename, extension, dir_pos);
+    
     //check to make sure path exists
+    if(dir_pos==-1 || file_pos==-1){
+        printf("ENOENT: Path doesn't exist\n");
+        return -ENOENT;
+    }
+    else if(strlen(directory_name)!=0 && strlen(filename)==0){
+        return -EISDIR;
+    }
     //check that size is > 0
-    //check that offset is <= to the file size
+    else if (size <= 0){
+        printf("Size is not bigger than 0\n");
+        return 0;
+    }
+    //find the location of the directory
+    fseek(file, dir_pos, SEEK_SET);
+    fread(dir_entry, sizeof(cs1550_directory_entry), 1, file);
+    
+    //find the location of the file
+    fseek(file, file_pos, SEEK_SET);
+    fread(file_block, sizeof(cs1550_disk_block), 1, file);
+    
+    //locate start byte to read. B/c read only read 8192 bytes at once
+    int start_block = offset/MAX_DATA_IN_BLOCK;     //the # of the block where we should write to. Start from block 0
+    int pos_in_block = offset%MAX_DATA_IN_BLOCK;    //byte position in the block of where we should write
+    int left_in_block = MAX_DATA_IN_BLOCK - pos_in_block; //remaining bytes in current block not read
+    int left_in_file = 0;  //remaining bytes in entire file not yet read
+    int i = 0;
+    for(i = 0; i<dir_entry->nFiles; i++){
+        if(strcmp(dir_entry->files[i].fname, filename)==0 && strcmp(dir_entry->files[i].fext, extension)==0){
+            left_in_file = dir_entry->files[i].fsize - offset;
+        }
+    }
+    
+    int cur = 0;                //number of current block
+    int cur_block_pos = 0;      //byte position of next linked disk block
+    
+    //traverse to find the block where the first byte to read resides
+    while (cur != start_block){
+        cur_block_pos = file_block->nNextBlock;  //get block position of the next block
+        fseek(file, cur_block_pos, SEEK_SET);
+        fread(file_block, sizeof(cs1550_disk_block), 1, file);
+        cur = cur + 1;
+    }
+    printf("Start block is %i\n", start_block);
+    
+    int new_data = 0;
     //read in data
+    while(left_in_file > 0){
+        //find the location of the file
+        fseek(file, file_pos, SEEK_SET);
+        fread(file_block, sizeof(cs1550_disk_block), 1, file);
+        
+        //in case block is not fully filled
+        if (left_in_block > left_in_file) {
+            left_in_block = left_in_file;
+        }
+        //read from where we left off last time
+        if (left_in_block > 0) {
+            int m = 0;
+            for (m = pos_in_block; m < MAX_DATA_IN_BLOCK; m++) {
+                buf[new_data] = file_block->data[m];
+                new_data++;
+                left_in_block = left_in_block - 1;
+                left_in_file = left_in_file - 1;
+            }
+        }
+        //read entire block from beginning byte
+        else {
+            int n = 0;
+            for (n = 0; n < MAX_DATA_IN_BLOCK; n++) {
+                buf[new_data] = file_block->data[n];
+                new_data++;
+                left_in_file = left_in_file - 1;
+            }
+        }
+        //continue to next file block to read
+        if(file_block->nNextBlock!=0){
+            file_pos = file_block->nNextBlock;
+            left_in_block = MAX_DATA_IN_BLOCK;
+        } else {
+            printf("ERROR: Should have next block");
+        }
+    }
     //set size and return, or error
-    
-    size = 0;
-    
-    return size;
+    fclose(file);
+    free(root_dir);
+    free(dir_entry);
+    free(file_block);
+    return file_size;
 }
+
+
 
 // ============================================================================
 // ============================== cs1550_write() ==============================
@@ -623,20 +869,223 @@ static int cs1550_read(const char *path, char *buf, size_t size, off_t offset,
 static int cs1550_write(const char *path, const char *buf, size_t size,
                         off_t offset, struct fuse_file_info *fi)
 {
+    printf("\n===write()===\n");
     (void) buf;
     (void) offset;
     (void) fi;
     (void) path;
+    int res = 0;
+    
+    char directory_name[MAX_FILENAME + 1];      // subdirectory
+    char filename[MAX_FILENAME + 1];            // filename
+    char extension[MAX_EXTENSION + 1];          // extension
+    
+    memset(directory_name, 0, (MAX_FILENAME + 1));      // initialize directory to 0
+    memset(filename, 0, (MAX_FILENAME + 1));            // initialize filename to 0
+    memset(extension, 0, (MAX_EXTENSION + 1));          // initialize extension to 0
+    
+    FILE * file = fopen(".disk", "rb+");
+    cs1550_root_directory * root_dir = malloc(sizeof(cs1550_root_directory));
+    cs1550_directory_entry * dir_entry = malloc(sizeof(cs1550_directory_entry));
+    cs1550_disk_block * file_block = malloc(sizeof(cs1550_disk_block));
+    
+    fseek(file, 0, SEEK_SET);
+    fread(root_dir, sizeof(cs1550_root_directory), 1, file);
+    
+    sscanf(path, "/%[^/]/%[^.].%s", directory_name, filename, extension);
+    
+    int dir_pos = -1;       //directory byte position on disk
+    int file_pos = -1;      //file byte position on disk
+    size_t file_size = -1;  //size of file
+    dir_pos = get_directory_pos(directory_name);
+    file_pos = get_file_pos(filename, extension, dir_pos);
+    file_size = get_file_size(filename, extension, dir_pos);
     
     //check to make sure path exists
+    if(dir_pos==-1 || file_pos==-1){
+        printf("ENOENT: Path doesn't exist\n");
+        return -ENOENT;
+    }
     //check that size is > 0
+    else if (size <= 0){
+        printf("Size is not bigger than 0\n");
+        return 0;
+    }
     //check that offset is <= to the file size
-    //write data
-    //set size (should be same as input) and return, or error
+    else if(offset > file_size){
+        printf("Offset is beyond file size\n");
+        res = -EFBIG; //needs to handle append
+    }
+    //find the location of the directory
+    fseek(file, dir_pos, SEEK_SET);
+    fread(dir_entry, sizeof(cs1550_directory_entry), 1, file);
     
-    return size;
+    //find the location of the file
+    fseek(file, file_pos, SEEK_SET);
+    fread(file_block, sizeof(cs1550_disk_block), 1, file);
+    
+    //locate start byte to write. B/c read only read 4096 bytes at once
+    int start_block = offset/MAX_DATA_IN_BLOCK;     //the # of the block where we should write to. Start from block 0
+    int pos_in_block = offset%MAX_DATA_IN_BLOCK;    //byte position in the block of where we should write
+    
+    int cur = 0;    //number of current block
+    int cur_block_pos = 0; //byte position of next linked disk block
+    
+    //traverse to find the block where the first byte resides
+    while (cur != start_block){
+        cur_block_pos = file_block->nNextBlock;  //get block position of the next block
+        fseek(file, cur_block_pos, SEEK_SET);
+        fread(file_block, sizeof(cs1550_disk_block), 1, file);
+        cur = cur + 1;
+    }
+    
+    int new_data = 0;  //total amount of new data being written
+    
+    //while total data being written is less than size (4096)
+    while(new_data<size){
+        //if current block is full
+        if(pos_in_block >= MAX_DATA_IN_BLOCK){
+            //if current block does not have next block
+            if(file_block->nNextBlock == 0){
+                printf("Creating new block\n");
+                
+                //create new block
+                char bitmap[10240]="";              //bitmap array represents 10240 blocks
+                memset(bitmap, 0, 10240);           //initialize array to contain all 0s
+                int newblock_pos = -1;              //block position for new file block
+                
+                //load bitmap from disk
+                fseek(file, -10240, SEEK_END);
+                fread(bitmap, 10240, 1, file);
+                
+                //look for free block for new file
+                int i = 1;                      //skip root block
+                for(i = 1; i<10240; i++){
+                    if(bitmap[i]==0){
+                        bitmap[i] = 1;
+                        newblock_pos = i;       //set file's new block location
+                        break;                  //break out of search after find free block
+                    }
+                }
+                //update bitmap to disk
+                fseek(file, -10240, SEEK_END);
+                fwrite(bitmap, sizeof(bitmap), 1, file);
+                
+                //link current block to newly allocated block
+                file_block->nNextBlock = newblock_pos*512;
+                //write full block to disk
+                fseek(file, cur_block_pos, SEEK_SET);
+                fwrite(file_block, sizeof(cs1550_disk_block), 1, file);
+                
+                //load in new file block as new file_block, update cur_block_pos
+                fseek(file, newblock_pos, SEEK_SET);
+                cur_block_pos = newblock_pos;
+                fread(file_block, sizeof(cs1550_disk_block), 1, file);
+                pos_in_block = 0;
+            }else{
+                //write full block to disk
+                fseek(file, cur_block_pos, SEEK_SET);
+                fwrite(file_block, sizeof(cs1550_disk_block), 1, file);
+                
+                cur_block_pos = file_block->nNextBlock;
+                
+                //load in new file block as new file_block, update cur_block_pos
+                fseek(file, cur_block_pos, SEEK_SET);
+                fread(file_block, sizeof(cs1550_disk_block), 1, file);
+                pos_in_block = 0;
+            }
+        }
+        //if current block is not full
+        file_block->data[pos_in_block] = buf[new_data]; //write cur byte in buf to cur block position
+        printf("%i", file_block->data[pos_in_block]);
+        file_size = file_size + 1;                      //increment file size
+        new_data = new_data + 1;                        //increment amount of new data being written
+        pos_in_block = pos_in_block + 1;                //increment to next position in file block
+    }
+    printf("\n");
+    printf("Out of the loop!\n");
+    //set size (should be same as input) and return, or error
+    int i = 0;
+    for(i = 0; i<dir_entry->nFiles; i++){
+        if(strcmp(dir_entry->files[i].fname, filename)==0 && strcmp(dir_entry->files[i].fext, extension)==0){
+            dir_entry->files[i].fsize = file_size;
+        }
+    }
+    printf("File size: %zu\n", file_size);
+    //find the location of the directory
+    fseek(file, dir_pos, SEEK_SET);
+    fwrite(dir_entry, sizeof(cs1550_directory_entry), 1, file);
+    
+    fclose(file);
+    free(root_dir);
+    free(dir_entry);
+    free(file_block);
+    return file_size;
 }
 
+//returns byte position of directory on disk
+int get_directory_pos(char * directory_name){
+    int dir_pos = -1;   //byte position of directory
+    
+    FILE * file = fopen(".disk", "rb+");
+    cs1550_root_directory * root_dir = malloc(sizeof(cs1550_root_directory));
+    
+    fseek(file, 0, SEEK_SET);
+    fread(root_dir, sizeof(cs1550_root_directory), 1, file);
+    
+    int i = 0;
+    for(i = 0; i<root_dir->nDirectories; i++){
+        if(strcmp(root_dir->directories[i].dname, directory_name)==0){
+            dir_pos = root_dir->directories[i].nStartBlock;
+            break;
+        }
+    }
+    fclose(file);
+    free(root_dir);
+    return dir_pos;
+}
+//returns byte position of file on disk
+int get_file_pos(char * filename, char * extension, int dir_pos){
+    int file_pos = -1; //byte position of file
+    
+    FILE * file = fopen(".disk", "rb+");
+    cs1550_directory_entry * dir_entry = malloc(sizeof(cs1550_directory_entry));
+    
+    fseek(file, dir_pos, SEEK_SET);
+    fread(dir_entry, sizeof(cs1550_directory_entry), 1, file);
+    
+    int i = 0;
+    for(i = 0; i<dir_entry->nFiles; i++){
+        if(strcmp(dir_entry->files[i].fname, filename)==0 && strcmp(dir_entry->files[i].fext, extension)==0){
+            file_pos = dir_entry->files[i].nStartBlock;
+            break;
+        }
+    }
+    fclose(file);
+    free(dir_entry);
+    return file_pos;
+}
+//returns size of file
+size_t get_file_size(char * filename, char * extension, int dir_pos){
+    size_t file_size = -1;
+    
+    FILE * file = fopen(".disk", "rb+");
+    cs1550_directory_entry * dir_entry = malloc(sizeof(cs1550_directory_entry));
+    
+    fseek(file, dir_pos, SEEK_SET);
+    fread(dir_entry, sizeof(cs1550_directory_entry), 1, file);
+    
+    int i = 0;
+    for(i = 0; i<dir_entry->nFiles; i++){
+        if(strcmp(dir_entry->files[i].fname, filename)==0 && strcmp(dir_entry->files[i].fext, extension)==0){
+            file_size = dir_entry->files[i].fsize;
+            break;
+        }
+    }
+    fclose(file);
+    free(dir_entry);
+    return file_size;
+}
 /******************************************************************************
  *
  *  DO NOT MODIFY ANYTHING BELOW THIS LINE
